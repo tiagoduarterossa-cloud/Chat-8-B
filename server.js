@@ -6,7 +6,7 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const selfsigned = require('selfsigned');
 
 const PORT = Number(process.env.PORT) || 8443;
 const DATA_DIR = path.join(__dirname, 'data');
@@ -43,18 +43,23 @@ function lanAddresses() {
 
 // O browser só permite WebCrypto em HTTPS (ou localhost), por isso geramos
 // um certificado autoassinado na primeira execução.
-function loadCert() {
+async function loadCert() {
   if (!fs.existsSync(KEY_FILE) || !fs.existsSync(CERT_FILE)) {
-    const san = ['DNS:localhost', 'IP:127.0.0.1', ...lanAddresses().map(ip => 'IP:' + ip)].join(',');
-    try {
-      execFileSync('openssl', [
-        'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '3650',
-        '-keyout', KEY_FILE, '-out', CERT_FILE,
-        '-subj', '/CN=chat-8-b', '-addext', 'subjectAltName=' + san,
-      ], { stdio: 'ignore' });
-    } catch {
-      return null;
-    }
+    const altNames = [
+      { type: 2, value: 'localhost' },
+      { type: 7, ip: '127.0.0.1' },
+      ...lanAddresses().map(ip => ({ type: 7, ip })),
+    ];
+    const notAfterDate = new Date();
+    notAfterDate.setFullYear(notAfterDate.getFullYear() + 10);
+    const pems = await selfsigned.generate([{ name: 'commonName', value: 'chat-8-b' }], {
+      keySize: 2048,
+      algorithm: 'sha256',
+      notAfterDate,
+      extensions: [{ name: 'subjectAltName', altNames }],
+    });
+    fs.writeFileSync(KEY_FILE, pems.private, { mode: 0o600 });
+    fs.writeFileSync(CERT_FILE, pems.cert);
   }
   return { key: fs.readFileSync(KEY_FILE), cert: fs.readFileSync(CERT_FILE) };
 }
@@ -131,13 +136,21 @@ function handler(req, res) {
   send(res, 404, { error: 'não encontrado' });
 }
 
-const tls = process.env.NO_TLS ? null : loadCert();
-const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
-const proto = tls ? 'https' : 'http';
+(async () => {
+  const tls = process.env.NO_TLS ? null : await loadCert();
+  const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
+  const proto = tls ? 'https' : 'http';
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Chat a correr. Abre num browser da mesma rede:`);
-  console.log(`  ${proto}://localhost:${PORT}`);
-  for (const ip of lanAddresses()) console.log(`  ${proto}://${ip}:${PORT}`);
-  if (!tls) console.log('Aviso: sem HTTPS a cifra só funciona em localhost. Instala o openssl.');
-});
+  server.on('error', err => {
+    if (err.code === 'EADDRINUSE') console.error(`A porta ${PORT} já está em uso. O chat já está aberto noutra janela?`);
+    else console.error(err.message);
+    process.exit(1);
+  });
+
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log('Chat a correr. Abre num browser da mesma rede:');
+    console.log(`  ${proto}://localhost:${PORT}   (neste computador)`);
+    for (const ip of lanAddresses()) console.log(`  ${proto}://${ip}:${PORT}   (telemóveis e outros aparelhos)`);
+    console.log('Para desligar: Ctrl+C');
+  });
+})();

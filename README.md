@@ -4,9 +4,10 @@ Chat cifrado ponta a ponta que funciona sem internet, numa rede Wi-Fi local ou n
 
 ## Como usar
 
-1. Num computador com Node.js 18 ou mais recente (e openssl), corre:
+1. Num computador com Node.js 18 ou mais recente, corre na pasta do projeto (o `npm install` só é preciso da primeira vez):
 
    ```
+   npm install
    npm start
    ```
 

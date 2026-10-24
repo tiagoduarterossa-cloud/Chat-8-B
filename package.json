@@ -3,6 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "description": "Chat cifrado ponta a ponta para rede local, sem internet",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=18" }
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "selfsigned": "5.5.0"
+  }
 }
