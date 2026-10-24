@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'">
+<title>Chat 8B</title>
+<style>
+  :root {
+    --bg: #f4f4f1; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+    --line: #dddcd6; --accent: #1f6f5c; --accent-text: #ffffff; --mine: #dcefe8; --err: #a33;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151614; --panel: #1f201e; --text: #ecebe6; --muted: #9a9993;
+      --line: #33342f; --accent: #3fa98d; --accent-text: #0d1512; --mine: #1f3a32; --err: #e67; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 16px/1.4 system-ui, sans-serif; }
+  .hidden { display: none !important; }
+  #join { max-width: 420px; margin: 0 auto; padding: 48px 16px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 24px; }
+  label { display: block; font-size: .9rem; margin: 16px 0 6px; color: var(--muted); }
+  input { width: 100%; padding: 12px; font: inherit; color: var(--text); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; }
+  button { font: inherit; padding: 12px 18px; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button:disabled { opacity: .6; cursor: wait; }
+  #join button { width: 100%; margin-top: 24px; }
+  .err { color: var(--err); font-size: .9rem; min-height: 1.2em; margin-top: 12px; }
+  #chat { display: flex; flex-direction: column; height: 100%; max-width: 760px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header .title { flex: 1; min-width: 0; }
+  header .fp { font-family: ui-monospace, monospace; font-size: .8rem; color: var(--muted); }
+  #status { font-size: .8rem; color: var(--muted); }
+  #status.on::before { content: "● "; color: var(--accent); }
+  #status.off::before { content: "● "; color: var(--err); }
+  header button { padding: 6px 12px; font-size: .85rem; background: transparent; color: var(--text);
+    border: 1px solid var(--line); }
+  #msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 80%; padding: 8px 12px; border-radius: 10px; background: var(--panel);
+    border: 1px solid var(--line); overflow-wrap: anywhere; white-space: pre-wrap; }
+  .msg.mine { align-self: flex-end; background: var(--mine); }
+  .msg .meta { font-size: .75rem; color: var(--muted); margin-bottom: 2px; }
+  .msg.pending { opacity: .55; }
+  .msg.bad { color: var(--err); font-style: italic; }
+  form#composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line);
+    background: var(--panel); }
+  form#composer input { flex: 1; }
+</style>
+</head>
+<body>
+
+<section id="join">
+  <h1>Chat 8B</h1>
+  <p class="sub">Cifrado ponta a ponta. Quem tiver a mesma palavra-passe entra na mesma sala.</p>
+  <form id="joinForm">
+    <label for="nick">O teu nome</label>
+    <input id="nick" maxlength="32" required autocomplete="nickname">
+    <label for="pass">Palavra-passe da sala</label>
+    <input id="pass" type="password" minlength="12" required autocomplete="off"
+      placeholder="mínimo 12 caracteres, ideal: 4 ou 5 palavras">
+    <button id="joinBtn" type="submit">Entrar</button>
+    <div class="err" id="joinErr"></div>
+  </form>
+</section>
+
+<section id="chat" class="hidden">
+  <header>
+    <div class="title">
+      <strong>Sala</strong> <span class="fp" id="fp" title="Comparem este código: se for igual, estão na mesma sala"></span><br>
+      <span id="status" class="off">a ligar…</span>
+    </div>
+    <button id="leave" type="button">Sair</button>
+  </header>
+  <div id="msgs" aria-live="polite"></div>
+  <form id="composer" autocomplete="off">
+    <input id="text" maxlength="4000" placeholder="Escreve uma mensagem" required>
+    <button type="submit">Enviar</button>
+  </form>
+</section>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const toB64 = buf => { let s = ''; for (const b of new Uint8Array(buf)) s += String.fromCharCode(b); return btoa(s); };
+const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+let session = null;   // { key, room, nick }
+let source = null;
+const seen = new Set();
+const outbox = [];
+
+// A palavra-passe gera 512 bits: metade é a chave AES, a outra metade (com hash)
+// identifica a sala. O servidor só vê o identificador, nunca a chave.
+async function derive(pass) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(pass.normalize('NFKC')), 'PBKDF2', false, ['deriveBits']);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: enc.encode('chat-8-b/v1'), iterations: 600000, hash: 'SHA-256' }, base, 512));
+  const key = await crypto.subtle.importKey('raw', bits.slice(0, 32), 'AES-GCM', false, ['encrypt', 'decrypt']);
+  const room = hex(await crypto.subtle.digest('SHA-256', bits.slice(32)));
+  return { key, room };
+}
+
+async function encrypt(obj) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: enc.encode(session.room) }, session.key, enc.encode(JSON.stringify(obj)));
+  return { iv: toB64(iv), ct: toB64(ct) };
+}
+
+async function decrypt(iv, ct) {
+  const pt = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: fromB64(iv), additionalData: enc.encode(session.room) }, session.key, fromB64(ct));
+  return JSON.parse(dec.decode(pt));
+}
+
+function render({ n, m, t }, opts = {}) {
+  const box = $('msgs');
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  const el = document.createElement('div');
+  el.className = 'msg' + (n === session.nick ? ' mine' : '') + (opts.pending ? ' pending' : '') + (opts.bad ? ' bad' : '');
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  meta.textContent = opts.bad ? '' : `${n} · ${new Date(t).toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' })}`;
+  const body = document.createElement('div');
+  body.textContent = m;
+  el.append(meta, body);
+  box.append(el);
+  if (atBottom || n === session.nick) box.scrollTop = box.scrollHeight;
+  return el;
+}
+
+function setStatus(on) {
+  $('status').className = on ? 'on' : 'off';
+  $('status').textContent = on ? 'ligado' : 'sem ligação, as mensagens ficam em espera';
+}
+
+function connect() {
+  source = new EventSource('/events?room=' + session.room);
+  source.onopen = () => { setStatus(true); flush(); };
+  source.onerror = () => setStatus(false);
+  source.onmessage = async ev => {
+    const { id, iv, ct } = JSON.parse(ev.data);
+    if (seen.has(id)) return;
+    seen.add(id);
+    const mine = outbox.find(o => o.id === id);
+    if (mine) { mine.el.classList.remove('pending'); outbox.splice(outbox.indexOf(mine), 1); return; }
+    try {
+      const msg = await decrypt(iv, ct);
+      render({ n: String(msg.n).slice(0, 32), m: String(msg.m), t: Number(msg.t) });
+    } catch {
+      render({ n: '', m: 'mensagem que não foi possível decifrar' }, { bad: true });
+    }
+  };
+}
+
+// Mensagens escritas sem ligação ficam na fila e são enviadas quando a rede volta.
+let flushing = false;
+async function flush() {
+  if (flushing) return;
+  flushing = true;
+  try {
+    for (const item of outbox) {
+      if (item.id) continue;
+      const res = await fetch('/send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ room: session.room, ...item.payload }),
+      });
+      if (!res.ok) throw new Error(res.status);
+      item.id = (await res.json()).id;
+      if (seen.has(item.id)) { item.el.classList.remove('pending'); outbox.splice(outbox.indexOf(item), 1); }
+    }
+  } catch {
+    setTimeout(flush, 3000);
+  } finally {
+    flushing = false;
+  }
+}
+
+$('joinForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!window.crypto?.subtle) {
+    $('joinErr').textContent = 'Este browser não permite cifra nesta ligação. Abre o endereço com https://';
+    return;
+  }
+  $('joinBtn').disabled = true;
+  $('joinErr').textContent = '';
+  $('joinBtn').textContent = 'A gerar a chave…';
+  try {
+    const nick = $('nick').value.trim();
+    const { key, room } = await derive($('pass').value);
+    $('pass').value = '';
+    session = { key, room, nick };
+    try { localStorage.setItem('chat8b-nick', nick); } catch {}
+    $('fp').textContent = room.slice(0, 4) + '-' + room.slice(4, 8);
+    $('join').classList.add('hidden');
+    $('chat').classList.remove('hidden');
+    connect();
+    $('text').focus();
+  } catch (err) {
+    $('joinErr').textContent = 'Erro: ' + err.message;
+  } finally {
+    $('joinBtn').disabled = false;
+    $('joinBtn').textContent = 'Entrar';
+  }
+});
+
+$('composer').addEventListener('submit', async e => {
+  e.preventDefault();
+  const m = $('text').value.trim();
+  if (!m) return;
+  $('text').value = '';
+  const msg = { n: session.nick, m, t: Date.now() };
+  const el = render(msg, { pending: true });
+  outbox.push({ payload: await encrypt(msg), el, id: null });
+  flush();
+});
+
+$('leave').addEventListener('click', () => location.reload());
+
+try { $('nick').value = localStorage.getItem('chat8b-nick') || ''; } catch {}
+</script>
+</body>
+</html>
