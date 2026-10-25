@@ -3,8 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; manifest-src 'self'; worker-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'">
 <title>Chat News</title>
+<link rel="manifest" href="/manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Chat News">
+<meta name="theme-color" content="#1f6f5c">
 <style>
   :root {
     --bg: #f4f4f1; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -59,6 +63,25 @@
     background: var(--panel); }
   form#composer input[type=text] { flex: 1; min-width: 0; }
   #attach { padding: 0 12px; background: transparent; color: var(--text); border: 1px solid var(--line); }
+  header .actions { display: flex; gap: 8px; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text);
+    width: min(440px, calc(100% - 32px)); padding: 20px; max-height: calc(100% - 32px); }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  dialog h2 { font-size: 1.15rem; margin: 0 0 12px; }
+  dialog h3 { font-size: 1rem; margin: 20px 0 6px; }
+  dialog p, dialog li { font-size: .92rem; color: var(--muted); margin: 6px 0; }
+  dialog ol { padding-left: 20px; margin: 6px 0; }
+  dialog .row { display: flex; align-items: center; gap: 10px; margin: 10px 0; font-size: .95rem; }
+  dialog .row input { width: auto; }
+  dialog details { margin: 8px 0; }
+  dialog summary { cursor: pointer; font-weight: 600; font-size: .92rem; }
+  dialog .btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  dialog .btns a, dialog .btns button { padding: 10px 14px; font-size: .92rem; border-radius: 8px; }
+  dialog .btns a { background: var(--accent); color: var(--accent-text); text-decoration: none; font-weight: 600; }
+  .ghost { background: transparent !important; color: var(--text) !important; border: 1px solid var(--line) !important; }
+  #notifState { font-size: .9rem; }
+  #notifState.ok { color: var(--accent); }
+  #notifState.warn { color: var(--err); }
   #viewer { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 12px; padding: 16px; z-index: 10; }
   #viewer img { max-width: 100%; max-height: calc(100% - 64px); object-fit: contain; }
@@ -89,7 +112,10 @@
       <strong>Chat News</strong> <span class="fp" id="fp" title="Comparem este código: se for igual, estão na mesma sala"></span><br>
       <span id="status" class="off">a ligar…</span>
     </div>
-    <button id="leave" type="button">Sair</button>
+    <div class="actions">
+      <button id="openSettings" type="button">Avisos</button>
+      <button id="leave" type="button">Sair</button>
+    </div>
   </header>
   <div id="msgs" aria-live="polite"></div>
   <form id="composer" autocomplete="off">
@@ -101,6 +127,51 @@
     <button type="submit">Enviar</button>
   </form>
 </section>
+
+<dialog id="settings">
+  <h2>Avisos de novas mensagens</h2>
+  <p id="notifState">a verificar…</p>
+  <div class="btns"><button id="enableNotif" type="button">Ativar notificações</button></div>
+  <label class="row"><input id="soundOn" type="checkbox" checked> Som quando chega uma mensagem</label>
+  <label class="row"><input id="previewOn" type="checkbox" checked> Mostrar o texto da mensagem na notificação</label>
+  <p>Os avisos só funcionam enquanto o chat estiver aberto no browser, mesmo que estejas noutra aplicação.
+    Se fechares o browser ou o telemóvel o fechar para poupar bateria, só vês as mensagens quando voltares.</p>
+
+  <h3>Instalar o certificado (uma vez por aparelho)</h3>
+  <p>Acaba com o aviso de segurança e, no Android, é obrigatório para as notificações funcionarem.
+    O certificado só é válido para endereços de rede local, não para sites da internet.</p>
+  <div class="btns"><a href="/ca.crt" download="chat-news.crt">Descarregar certificado</a></div>
+  <details>
+    <summary>Android</summary>
+    <ol>
+      <li>Descarrega o certificado com o botão acima.</li>
+      <li>Abre Definições e pesquisa por "certificado".</li>
+      <li>Escolhe "Instalar um certificado" e depois "Certificado CA". Confirma "Instalar mesmo assim".</li>
+      <li>Escolhe o ficheiro chat-news.crt nas Transferências.</li>
+      <li>Fecha o Chrome por completo e volta a abrir o chat.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>iPhone</summary>
+    <ol>
+      <li>Abre esta página no Safari e descarrega o certificado. Toca em "Permitir".</li>
+      <li>Abre Definições. Aparece "Perfil descarregado" no topo; toca e depois em "Instalar".</li>
+      <li>Vai a Definições, Geral, Informações, Definições de confiança de certificados, e ativa "Chat News".</li>
+      <li>As notificações no iPhone só existem se adicionares o chat ao ecrã principal
+        (Partilhar, "Adicionar ao ecrã principal") e o abrires a partir daí.</li>
+    </ol>
+  </details>
+  <details>
+    <summary>Computador Windows</summary>
+    <ol>
+      <li>Descarrega o certificado e abre o ficheiro.</li>
+      <li>"Instalar certificado", "Utilizador atual", "Colocar todos os certificados no seguinte arquivo",
+        "Autoridades de certificação de raiz fidedigna".</li>
+      <li>Fecha e volta a abrir o browser.</li>
+    </ol>
+  </details>
+  <div class="btns" style="margin-top:16px"><button id="closeSettings" type="button" class="ghost">Fechar</button></div>
+</dialog>
 
 <div id="viewer" class="hidden">
   <img id="viewerImg" alt="">
@@ -124,6 +195,7 @@ const MAX_FILE = 25 * 1024 * 1024;
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 let session = null;   // { key, room, nick }
+let live = false;     // passa a true depois de chegar o histórico
 let source = null;
 const seen = new Set();
 const outbox = [];
@@ -277,6 +349,7 @@ function connect() {
   source = new EventSource('/events?room=' + session.room);
   source.onopen = () => { setStatus(true); flush(); };
   source.onerror = () => setStatus(false);
+  source.addEventListener('ready', () => { live = true; });
   source.onmessage = async ev => {
     const { id, iv, ct } = JSON.parse(ev.data);
     if (seen.has(id)) return;
@@ -285,7 +358,9 @@ function connect() {
     if (mine) { done(mine); return; }
     try {
       const msg = await decrypt(iv, ct);
-      render({ n: String(msg.n).slice(0, 32), m: String(msg.m || ''), t: Number(msg.t), f: cleanFile(msg.f) });
+      const clean = { n: String(msg.n).slice(0, 32), m: String(msg.m || ''), t: Number(msg.t), f: cleanFile(msg.f) };
+      render(clean);
+      if (live && clean.n !== session.nick) alertNew(clean);
     } catch {
       render({ n: '', m: 'mensagem que não foi possível decifrar' }, { bad: true });
     }
@@ -386,12 +461,114 @@ async function sendFile(file) {
   flush();
 }
 
+// ---------- Avisos de novas mensagens ----------
+const prefs = { sound: true, preview: true };
+try { Object.assign(prefs, JSON.parse(localStorage.getItem('chatnews-prefs') || '{}')); } catch {}
+const savePrefs = () => { try { localStorage.setItem('chatnews-prefs', JSON.stringify(prefs)); } catch {} };
+
+let swReg = null;
+let audio = null;
+let unread = 0;
+
+async function setupServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  try { swReg = await navigator.serviceWorker.register('/sw.js'); } catch { swReg = null; }
+}
+
+const isAndroid = /Android/i.test(navigator.userAgent);
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+function notifStatus() {
+  if (!('Notification' in window)) {
+    return isIOS ? ['warn', 'No iPhone, instala o certificado e adiciona o chat ao ecrã principal para teres notificações.']
+                 : ['warn', 'Este browser não suporta notificações.'];
+  }
+  if (Notification.permission === 'denied') return ['warn', 'Notificações bloqueadas. Ativa-as nas definições do site no browser.'];
+  if (isAndroid && !swReg) return ['warn', 'No Android é preciso instalar o certificado (ver abaixo) para as notificações funcionarem.'];
+  if (Notification.permission === 'granted') return ['ok', 'Notificações ativas.'];
+  return ['', 'Notificações desligadas.'];
+}
+
+function updateSettings() {
+  const [cls, text] = notifStatus();
+  $('notifState').className = cls;
+  $('notifState').textContent = text;
+  const canAsk = 'Notification' in window && Notification.permission === 'default' && !(isAndroid && !swReg);
+  $('enableNotif').classList.toggle('hidden', !canAsk);
+  $('soundOn').checked = prefs.sound;
+  $('previewOn').checked = prefs.preview;
+}
+
+function ping() {
+  if (!prefs.sound || !audio) return;
+  try {
+    const t = audio.currentTime;
+    for (const [freq, start] of [[880, 0], [1320, 0.12]]) {
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t + start);
+      gain.gain.exponentialRampToValueAtTime(0.2, t + start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + start + 0.25);
+      osc.connect(gain).connect(audio.destination);
+      osc.start(t + start);
+      osc.stop(t + start + 0.3);
+    }
+  } catch {}
+}
+
+function updateTitle() {
+  document.title = unread ? `(${unread}) Chat News` : 'Chat News';
+}
+
+async function showNotification(msg) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const what = msg.f ? (IMAGE_TYPES.includes(msg.f.type) ? 'enviou uma foto' : 'enviou um ficheiro') : msg.m;
+  const body = prefs.preview ? (msg.f && !msg.m ? what : msg.m).slice(0, 180) : 'Nova mensagem';
+  const opts = { body, tag: 'chat-news', renotify: true };
+  try {
+    if (swReg) await swReg.showNotification(msg.n, opts);
+    else new Notification(msg.n, opts);
+  } catch {}
+}
+
+function alertNew(msg) {
+  const away = document.hidden || !document.hasFocus();
+  if (!away) return;
+  unread++;
+  updateTitle();
+  ping();
+  showNotification(msg);
+}
+
+function clearUnread() {
+  if (!unread) return;
+  unread = 0;
+  updateTitle();
+  swReg?.getNotifications?.({ tag: 'chat-news' }).then(list => list.forEach(n => n.close())).catch(() => {});
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) clearUnread(); });
+window.addEventListener('focus', clearUnread);
+
+$('openSettings').addEventListener('click', () => { updateSettings(); $('settings').showModal(); });
+$('closeSettings').addEventListener('click', () => $('settings').close());
+$('enableNotif').addEventListener('click', async () => {
+  await Notification.requestPermission();
+  updateSettings();
+  if (Notification.permission === 'granted') showNotification({ n: 'Chat News', m: 'As notificações estão a funcionar.' });
+});
+$('soundOn').addEventListener('change', e => { prefs.sound = e.target.checked; savePrefs(); if (prefs.sound) ping(); });
+$('previewOn').addEventListener('change', e => { prefs.preview = e.target.checked; savePrefs(); });
+
+setupServiceWorker();
+
 $('joinForm').addEventListener('submit', async e => {
   e.preventDefault();
   if (!window.crypto?.subtle) {
     $('joinErr').textContent = 'Este browser não permite cifra nesta ligação. Abre o endereço com https://';
     return;
   }
+  try { audio = audio || new AudioContext(); audio.resume(); } catch {}
   $('joinBtn').disabled = true;
   $('joinErr').textContent = '';
   $('joinBtn').textContent = 'A gerar a chave…';

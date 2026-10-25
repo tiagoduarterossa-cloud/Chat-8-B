@@ -6,13 +6,11 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const selfsigned = require('selfsigned');
+const { ensureCerts } = require('./certs');
 
 const PORT = Number(process.env.PORT) || 8443;
 const DATA_DIR = path.join(__dirname, 'data');
 const HISTORY_FILE = path.join(DATA_DIR, 'history.json');
-const KEY_FILE = path.join(DATA_DIR, 'key.pem');
-const CERT_FILE = path.join(DATA_DIR, 'cert.pem');
 const FILES_DIR = path.join(DATA_DIR, 'files');
 const MAX_PER_ROOM = 500;
 const MAX_BODY = 64 * 1024;
@@ -45,29 +43,6 @@ function lanAddresses() {
     .map(a => a.address);
 }
 
-// O browser só permite WebCrypto em HTTPS (ou localhost), por isso geramos
-// um certificado autoassinado na primeira execução.
-async function loadCert() {
-  if (!fs.existsSync(KEY_FILE) || !fs.existsSync(CERT_FILE)) {
-    const altNames = [
-      { type: 2, value: 'localhost' },
-      { type: 7, ip: '127.0.0.1' },
-      ...lanAddresses().map(ip => ({ type: 7, ip })),
-    ];
-    const notAfterDate = new Date();
-    notAfterDate.setFullYear(notAfterDate.getFullYear() + 10);
-    const pems = await selfsigned.generate([{ name: 'commonName', value: 'chat-news' }], {
-      keySize: 2048,
-      algorithm: 'sha256',
-      notAfterDate,
-      extensions: [{ name: 'subjectAltName', altNames }],
-    });
-    fs.writeFileSync(KEY_FILE, pems.private, { mode: 0o600 });
-    fs.writeFileSync(CERT_FILE, pems.cert);
-  }
-  return { key: fs.readFileSync(KEY_FILE), cert: fs.readFileSync(CERT_FILE) };
-}
-
 function send(res, status, body, type = 'application/json') {
   res.writeHead(status, {
     'Content-Type': type,
@@ -94,6 +69,8 @@ function handleEvents(req, res, url) {
   });
   res.write('retry: 2000\n\n');
   for (const msg of (rooms[room]?.msgs || [])) if (msg.id > since) sse(res, msg);
+  // Marca o fim do histórico: daqui para a frente são mensagens novas (para os avisos).
+  res.write('event: ready\ndata: {}\n\n');
 
   if (!listeners.has(room)) listeners.set(room, new Set());
   listeners.get(room).add(res);
@@ -202,11 +179,31 @@ function handleFile(res, url) {
 }
 
 const indexHtml = path.join(__dirname, 'public', 'index.html');
+const swJs = path.join(__dirname, 'public', 'sw.js');
+let caDer = null;
+const MANIFEST = JSON.stringify({
+  name: 'Chat News', short_name: 'Chat News', start_url: '/', display: 'standalone',
+  background_color: '#f4f4f1', theme_color: '#1f6f5c',
+});
 
 function handler(req, res) {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'GET' && url.pathname === '/') {
     return send(res, 200, fs.readFileSync(indexHtml), 'text/html; charset=utf-8');
+  }
+  if (req.method === 'GET' && url.pathname === '/manifest.json') {
+    return send(res, 200, MANIFEST, 'application/manifest+json');
+  }
+  if (req.method === 'GET' && url.pathname === '/sw.js') {
+    return send(res, 200, fs.readFileSync(swJs), 'text/javascript; charset=utf-8');
+  }
+  if (req.method === 'GET' && url.pathname === '/ca.crt' && caDer) {
+    res.writeHead(200, {
+      'Content-Type': 'application/x-x509-ca-cert',
+      'Content-Disposition': 'attachment; filename="chat-news.crt"',
+      'Content-Length': caDer.length,
+    });
+    return res.end(caDer);
   }
   if (req.method === 'GET' && url.pathname === '/events') return handleEvents(req, res, url);
   if (req.method === 'POST' && url.pathname === '/send') return handleSend(req, res);
@@ -216,7 +213,8 @@ function handler(req, res) {
 }
 
 (async () => {
-  const tls = process.env.NO_TLS ? null : await loadCert();
+  const tls = process.env.NO_TLS ? null : await ensureCerts(DATA_DIR, lanAddresses());
+  if (tls) caDer = tls.caDer;
   const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
   const proto = tls ? 'https' : 'http';
 
@@ -230,6 +228,14 @@ function handler(req, res) {
     console.log('Chat News a correr. Abre num browser da mesma rede:');
     console.log(`  ${proto}://localhost:${PORT}   (neste computador)`);
     for (const ip of lanAddresses()) console.log(`  ${proto}://${ip}:${PORT}   (telemóveis e outros aparelhos)`);
+    if (tls) {
+      console.log('');
+      console.log('Para deixar de ver o aviso de segurança e ter notificações, cada telemóvel');
+      console.log('instala o certificado uma vez (instruções no botão "Avisos" do chat).');
+      console.log('Impressão digital do certificado, para confirmar no telemóvel:');
+      console.log('  ' + tls.caFingerprint);
+    }
+    console.log('');
     console.log('Para desligar: Ctrl+C');
   });
 })();
