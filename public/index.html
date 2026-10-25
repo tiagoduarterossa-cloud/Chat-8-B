@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'">
-<title>Chat 8B</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' blob:; connect-src 'self'">
+<title>Chat News</title>
 <style>
   :root {
     --bg: #f4f4f1; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
@@ -40,21 +40,37 @@
   header button { padding: 6px 12px; font-size: .85rem; background: transparent; color: var(--text);
     border: 1px solid var(--line); }
   #msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  #msgs.drop { outline: 2px dashed var(--accent); outline-offset: -8px; }
   .msg { max-width: 80%; padding: 8px 12px; border-radius: 10px; background: var(--panel);
     border: 1px solid var(--line); overflow-wrap: anywhere; white-space: pre-wrap; }
   .msg.mine { align-self: flex-end; background: var(--mine); }
   .msg .meta { font-size: .75rem; color: var(--muted); margin-bottom: 2px; }
-  .msg.pending { opacity: .55; }
+  .msg.pending { opacity: .6; }
   .msg.bad { color: var(--err); font-style: italic; }
+  .msg .photo { display: block; max-width: 100%; width: 280px; border-radius: 6px; cursor: zoom-in;
+    background: var(--line); object-fit: cover; }
+  .msg .file { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); text-decoration: none;
+    cursor: pointer; font: inherit; text-align: left; width: 100%; }
+  .msg .file svg { flex: none; }
+  .msg .file small { display: block; color: var(--muted); }
+  .msg .note { font-size: .8rem; color: var(--muted); margin-top: 4px; }
   form#composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line);
     background: var(--panel); }
-  form#composer input { flex: 1; }
+  form#composer input[type=text] { flex: 1; min-width: 0; }
+  #attach { padding: 0 12px; background: transparent; color: var(--text); border: 1px solid var(--line); }
+  #viewer { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 12px; padding: 16px; z-index: 10; }
+  #viewer img { max-width: 100%; max-height: calc(100% - 64px); object-fit: contain; }
+  #viewer .bar { display: flex; gap: 8px; }
+  #viewer a, #viewer button { padding: 10px 16px; border-radius: 8px; background: #fff; color: #111;
+    font-weight: 600; text-decoration: none; border: 0; font-size: .95rem; }
 </style>
 </head>
 <body>
 
 <section id="join">
-  <h1>Chat 8B</h1>
+  <h1>Chat News</h1>
   <p class="sub">Cifrado ponta a ponta. Quem tiver a mesma palavra-passe entra na mesma sala.</p>
   <form id="joinForm">
     <label for="nick">O teu nome</label>
@@ -70,17 +86,29 @@
 <section id="chat" class="hidden">
   <header>
     <div class="title">
-      <strong>Sala</strong> <span class="fp" id="fp" title="Comparem este código: se for igual, estão na mesma sala"></span><br>
+      <strong>Chat News</strong> <span class="fp" id="fp" title="Comparem este código: se for igual, estão na mesma sala"></span><br>
       <span id="status" class="off">a ligar…</span>
     </div>
     <button id="leave" type="button">Sair</button>
   </header>
   <div id="msgs" aria-live="polite"></div>
   <form id="composer" autocomplete="off">
-    <input id="text" maxlength="4000" placeholder="Escreve uma mensagem" required>
+    <button id="attach" type="button" title="Enviar foto ou ficheiro" aria-label="Enviar foto ou ficheiro">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1l-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l8.5-8.5a3.7 3.7 0 0 1 5.2 5.2l-8.5 8.5a1.8 1.8 0 0 1-2.6-2.6l7.8-7.8"/></svg>
+    </button>
+    <input id="fileInput" type="file" multiple class="hidden">
+    <input id="text" type="text" maxlength="4000" placeholder="Escreve uma mensagem">
     <button type="submit">Enviar</button>
   </form>
 </section>
+
+<div id="viewer" class="hidden">
+  <img id="viewerImg" alt="">
+  <div class="bar">
+    <a id="viewerSave" download>Guardar</a>
+    <button id="viewerClose" type="button">Fechar</button>
+  </div>
+</div>
 
 <script>
 'use strict';
@@ -90,6 +118,10 @@ const dec = new TextDecoder();
 const toB64 = buf => { let s = ''; for (const b of new Uint8Array(buf)) s += String.fromCharCode(b); return btoa(s); };
 const fromB64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
 const hex = buf => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
+
+const MAX_FILE = 25 * 1024 * 1024;
+// Só estes tipos são mostrados como imagem; tudo o resto vai como ficheiro para descarregar.
+const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 
 let session = null;   // { key, room, nick }
 let source = null;
@@ -120,7 +152,97 @@ async function decrypt(iv, ct) {
   return JSON.parse(dec.decode(pt));
 }
 
-function render({ n, m, t }, opts = {}) {
+// Ficheiros: IV (12 bytes) seguido do texto cifrado, ligado à sala e ao id do ficheiro.
+async function encryptFile(bytes, id) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv, additionalData: enc.encode(session.room + '|' + id) }, session.key, bytes);
+  const out = new Uint8Array(12 + ct.byteLength);
+  out.set(iv);
+  out.set(new Uint8Array(ct), 12);
+  return out;
+}
+
+const fileCache = new Map();
+function fetchFile(f) {
+  if (!fileCache.has(f.id)) {
+    fileCache.set(f.id, (async () => {
+      const res = await fetch(`/file?room=${session.room}&id=${f.id}`);
+      if (!res.ok) throw new Error(res.status === 404 ? 'o ficheiro já não existe' : 'erro ' + res.status);
+      const data = new Uint8Array(await res.arrayBuffer());
+      const pt = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: data.slice(0, 12), additionalData: enc.encode(session.room + '|' + f.id) },
+        session.key, data.slice(12));
+      const type = IMAGE_TYPES.includes(f.type) ? f.type : 'application/octet-stream';
+      return URL.createObjectURL(new Blob([pt], { type }));
+    })());
+    fileCache.get(f.id).catch(() => fileCache.delete(f.id));
+  }
+  return fileCache.get(f.id);
+}
+
+function formatSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1024 / 1024).toFixed(1).replace('.', ',') + ' MB';
+}
+
+const fileIcon = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>';
+
+function download(url, name) {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
+}
+
+function openViewer(url, name) {
+  $('viewerImg').src = url;
+  $('viewerSave').href = url;
+  $('viewerSave').download = name;
+  $('viewer').classList.remove('hidden');
+}
+
+function renderFile(el, f, localUrl) {
+  const note = document.createElement('div');
+  note.className = 'note';
+  if (IMAGE_TYPES.includes(f.type)) {
+    const img = document.createElement('img');
+    img.className = 'photo';
+    img.alt = f.name;
+    if (f.w && f.h) img.style.aspectRatio = `${f.w} / ${f.h}`;
+    el.append(img, note);
+    const show = url => { img.src = url; img.onclick = () => openViewer(url, f.name); };
+    if (localUrl) show(localUrl);
+    else {
+      note.textContent = 'a carregar foto…';
+      fetchFile(f).then(url => { note.textContent = ''; show(url); })
+        .catch(err => { note.textContent = 'Foto indisponível: ' + err.message; img.remove(); });
+    }
+  } else {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'file';
+    btn.innerHTML = fileIcon;
+    const label = document.createElement('span');
+    label.textContent = f.name;
+    const size = document.createElement('small');
+    size.textContent = formatSize(f.size) + ' · tocar para descarregar';
+    label.append(size);
+    btn.append(label);
+    btn.onclick = () => {
+      note.textContent = 'a descarregar…';
+      fetchFile(f).then(url => { note.textContent = ''; download(url, f.name); })
+        .catch(err => { note.textContent = 'Não foi possível: ' + err.message; });
+    };
+    el.append(btn, note);
+  }
+  return note;
+}
+
+function render({ n, m, t, f }, opts = {}) {
   const box = $('msgs');
   const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   const el = document.createElement('div');
@@ -128,9 +250,13 @@ function render({ n, m, t }, opts = {}) {
   const meta = document.createElement('div');
   meta.className = 'meta';
   meta.textContent = opts.bad ? '' : `${n} · ${new Date(t).toLocaleString('pt-PT', { dateStyle: 'short', timeStyle: 'short' })}`;
-  const body = document.createElement('div');
-  body.textContent = m;
-  el.append(meta, body);
+  el.append(meta);
+  if (f) el.note = renderFile(el, f, opts.localUrl);
+  if (m) {
+    const body = document.createElement('div');
+    body.textContent = m;
+    el.append(body);
+  }
   box.append(el);
   if (atBottom || n === session.nick) box.scrollTop = box.scrollHeight;
   return el;
@@ -139,6 +265,12 @@ function render({ n, m, t }, opts = {}) {
 function setStatus(on) {
   $('status').className = on ? 'on' : 'off';
   $('status').textContent = on ? 'ligado' : 'sem ligação, as mensagens ficam em espera';
+}
+
+function cleanFile(f) {
+  if (!f || typeof f !== 'object' || !/^[a-f0-9]{32}$/.test(f.id)) return undefined;
+  return { id: f.id, name: String(f.name || 'ficheiro').slice(0, 200), type: String(f.type || ''),
+    size: Number(f.size) || 0, w: Number(f.w) || 0, h: Number(f.h) || 0 };
 }
 
 function connect() {
@@ -150,14 +282,33 @@ function connect() {
     if (seen.has(id)) return;
     seen.add(id);
     const mine = outbox.find(o => o.id === id);
-    if (mine) { mine.el.classList.remove('pending'); outbox.splice(outbox.indexOf(mine), 1); return; }
+    if (mine) { done(mine); return; }
     try {
       const msg = await decrypt(iv, ct);
-      render({ n: String(msg.n).slice(0, 32), m: String(msg.m), t: Number(msg.t) });
+      render({ n: String(msg.n).slice(0, 32), m: String(msg.m || ''), t: Number(msg.t), f: cleanFile(msg.f) });
     } catch {
       render({ n: '', m: 'mensagem que não foi possível decifrar' }, { bad: true });
     }
   };
+}
+
+function done(item) {
+  item.el.classList.remove('pending');
+  if (item.el.note) item.el.note.textContent = '';
+  outbox.splice(outbox.indexOf(item), 1);
+}
+
+function upload(item) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `/upload?room=${session.room}&id=${item.fileId}`);
+    xhr.upload.onprogress = e => {
+      if (e.lengthComputable) item.el.note.textContent = `a enviar ${Math.round(e.loaded / e.total * 100)}%`;
+    };
+    xhr.onload = () => xhr.status === 200 ? resolve() : reject(new Error(xhr.status));
+    xhr.onerror = () => reject(new Error('rede'));
+    xhr.send(item.blob);
+  });
 }
 
 // Mensagens escritas sem ligação ficam na fila e são enviadas quando a rede volta.
@@ -166,21 +317,73 @@ async function flush() {
   if (flushing) return;
   flushing = true;
   try {
-    for (const item of outbox) {
-      if (item.id) continue;
+    let item;
+    while ((item = outbox.find(o => !o.id))) {
+      if (item.blob) {
+        await upload(item);
+        item.blob = null;
+        item.el.note.textContent = 'enviado, a confirmar…';
+      }
       const res = await fetch('/send', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ room: session.room, ...item.payload }),
       });
       if (!res.ok) throw new Error(res.status);
       item.id = (await res.json()).id;
-      if (seen.has(item.id)) { item.el.classList.remove('pending'); outbox.splice(outbox.indexOf(item), 1); }
+      if (seen.has(item.id)) done(item);
     }
   } catch {
+    for (const item of outbox) if (item.blob && item.el.note) item.el.note.textContent = 'à espera de ligação…';
     setTimeout(flush, 3000);
   } finally {
     flushing = false;
   }
+}
+
+// Fotos são reduzidas para no máximo 2048 px. Isto também apaga os metadados
+// (incluindo a localização GPS que os telemóveis guardam nas fotos).
+async function prepareImage(file) {
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(file.type)) return null;
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, 2048 / Math.max(bmp.width, bmp.height));
+    const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale);
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(bmp, 0, 0, w, h);
+    bmp.close();
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.85));
+    if (!blob) return null;
+    return { blob, type: 'image/jpeg', w, h, name: file.name.replace(/\.[^.]+$/, '') + '.jpg' };
+  } catch {
+    return null;
+  }
+}
+
+async function sendFile(file) {
+  let blob = file, type = file.type || 'application/octet-stream', w = 0, h = 0, name = file.name || 'ficheiro';
+  const img = await prepareImage(file);
+  if (img) ({ blob, type, w, h, name } = img);
+  else if (type === 'image/gif') {
+    try { const b = await createImageBitmap(file); w = b.width; h = b.height; b.close(); } catch { type = 'application/octet-stream'; }
+  }
+  if (blob.size > MAX_FILE) {
+    alert(`"${name}" tem ${formatSize(blob.size)}. O limite é 25 MB.`);
+    return;
+  }
+  const fileId = hex(crypto.getRandomValues(new Uint8Array(16)));
+  const f = { id: fileId, name, type, size: blob.size, w, h };
+  const msg = { n: session.nick, m: '', t: Date.now(), f };
+  const localUrl = IMAGE_TYPES.includes(type) ? URL.createObjectURL(blob) : null;
+  if (localUrl) fileCache.set(fileId, Promise.resolve(localUrl));
+  const el = render(msg, { pending: true, localUrl });
+  el.note.textContent = 'a cifrar…';
+  const encBlob = await encryptFile(await blob.arrayBuffer(), fileId);
+  outbox.push({ payload: await encrypt(msg), el, id: null, fileId, blob: encBlob });
+  flush();
 }
 
 $('joinForm').addEventListener('submit', async e => {
@@ -221,6 +424,35 @@ $('composer').addEventListener('submit', async e => {
   outbox.push({ payload: await encrypt(msg), el, id: null });
   flush();
 });
+
+async function sendFiles(files) {
+  for (const file of files) await sendFile(file);
+}
+
+$('attach').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', () => {
+  const files = [...$('fileInput').files];
+  $('fileInput').value = '';
+  sendFiles(files);
+});
+
+// No computador: arrastar ficheiros para a conversa ou colar uma imagem.
+const box = $('msgs');
+box.addEventListener('dragover', e => { e.preventDefault(); box.classList.add('drop'); });
+box.addEventListener('dragleave', () => box.classList.remove('drop'));
+box.addEventListener('drop', e => {
+  e.preventDefault();
+  box.classList.remove('drop');
+  if (session) sendFiles([...e.dataTransfer.files]);
+});
+document.addEventListener('paste', e => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (session && files.length) { e.preventDefault(); sendFiles(files); }
+});
+
+$('viewerClose').addEventListener('click', () => $('viewer').classList.add('hidden'));
+$('viewer').addEventListener('click', e => { if (e.target.id === 'viewer') $('viewer').classList.add('hidden'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('viewer').classList.add('hidden'); });
 
 $('leave').addEventListener('click', () => location.reload());
 
